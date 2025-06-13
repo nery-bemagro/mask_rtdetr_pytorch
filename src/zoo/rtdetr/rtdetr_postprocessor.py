@@ -36,6 +36,7 @@ class RTDETRPostProcessor(nn.Module):
 
         bbox_pred = torchvision.ops.box_convert(boxes, in_fmt='cxcywh', out_fmt='xyxy')
         bbox_pred *= orig_target_sizes.repeat(1, 2).unsqueeze(1)
+        masks = outputs['pred_masks']
 
         if self.use_focal_loss:
             scores = F.sigmoid(logits)
@@ -62,11 +63,29 @@ class RTDETRPostProcessor(nn.Module):
             from ...data.coco import mscoco_label2category
             labels = torch.tensor([mscoco_label2category[int(x.item())] for x in labels.flatten()])\
                 .to(boxes.device).reshape(labels.shape)
+                
+        if masks is not None:
+            if self.use_focal_loss:
+                # Select top masks using the same indices
+                masks = masks.gather(1, index.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, masks.size(-2), masks.size(-1)))
+            else:
+                masks = masks.gather(1, index.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, masks.size(-2), masks.size(-1)))
 
         results = []
-        for lab, box, sco in zip(labels, boxes, scores):
-            result = dict(labels=lab, boxes=box, scores=sco)
-            results.append(result)
+        for i, (lab, box, sco) in enumerate(zip(labels, boxes, scores)):
+            res = dict(labels=lab, boxes=box, scores=sco)
+            if masks is not None:
+                # Resize mask to original image size
+                img_mask = masks[i].unsqueeze(1)  # [Q, 1, H_mask, W_mask]
+                orig_size = orig_target_sizes[i].tolist()
+                resized_mask = F.interpolate(
+                    img_mask, 
+                    size=orig_size, 
+                    mode='bilinear', 
+                    align_corners=False
+                ).squeeze(1)  # [Q, H_orig, W_orig]
+                res['masks'] = (resized_mask > 0.5).float()
+            results.append(res)
         
         return results
         
