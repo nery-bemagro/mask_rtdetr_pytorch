@@ -137,6 +137,7 @@ def main(args, ):
         def forward(self, images, orig_target_sizes):
             outputs = self.model(images)
             outputs = self.postprocessor(outputs, orig_target_sizes)
+            print(len(outputs))
             return outputs
     
     model = Model().to(args.device)
@@ -191,12 +192,6 @@ if __name__ == '__main__':
     parser.add_argument('-nc', '--numberofboxes', type=int, default=25)
     args = parser.parse_args()
     main(args)
-
-
-
-
-
-
 
 
 

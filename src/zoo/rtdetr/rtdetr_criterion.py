@@ -171,28 +171,27 @@ class SetCriterion(nn.Module):
         return losses
 
     def loss_masks(self, outputs, targets, indices, num_boxes):
-        """Compute the losses related to the masks: the focal loss and the dice loss.
-           targets dicts must contain the key "masks" containing a tensor of dim [nb_target_boxes, h, w]
-        """
         assert "pred_masks" in outputs
 
         src_idx = self._get_src_permutation_idx(indices)
         tgt_idx = self._get_tgt_permutation_idx(indices)
         src_masks = outputs["pred_masks"]
         src_masks = src_masks[src_idx]
-        masks = [t["masks"] for t in targets]
-        # TODO use valid to mask invalid areas due to padding in loss
-        target_masks, valid = nested_tensor_from_tensor_list(masks).decompose()
-        target_masks = target_masks.to(src_masks)
-        target_masks = target_masks[tgt_idx]
-
-        # upsample predictions to the target size
-        src_masks = interpolate(src_masks[:, None], size=target_masks.shape[-2:],
-                                mode="bilinear", align_corners=False)
+        
+        # Collect target masks directly without nested tensor
+        target_masks = []
+        for t, (_, J) in zip(targets, indices):
+            target_masks.append(t["masks"][J])
+        target_masks = torch.cat(target_masks, dim=0).to(src_masks)
+        
+        # Upsample predictions to target size
+        src_masks = F.interpolate(src_masks[:, None], 
+                                size=target_masks.shape[-2:],
+                                mode="bilinear", 
+                                align_corners=False)
         src_masks = src_masks[:, 0].flatten(1)
-
         target_masks = target_masks.flatten(1)
-        target_masks = target_masks.view(src_masks.shape)
+        
         losses = {
             "loss_mask": sigmoid_focal_loss(src_masks, target_masks, num_boxes),
             "loss_dice": dice_loss(src_masks, target_masks, num_boxes),
@@ -337,5 +336,40 @@ def accuracy(output, target, topk=(1,)):
     return res
 
 
+def sigmoid_focal_loss(inputs, targets, num_boxes, alpha=0.25, gamma=2.0):
+    """
+    Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
+    
+    Args:
+        inputs: A float tensor of arbitrary shape (predictions)
+        targets: A float tensor with the same shape as inputs (binary targets 0/1)
+        num_boxes: Number of positive boxes for normalization
+        alpha: Weighting factor for positive/negative examples
+        gamma: Exponent for modulating factor
+    """
+    prob = inputs.sigmoid()
+    ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+    p_t = prob * targets + (1 - prob) * (1 - targets)
+    loss = ce_loss * ((1 - p_t) ** gamma)
+
+    alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+    loss = alpha_t * loss
+
+    return loss.mean(1).sum() / num_boxes
+
+def dice_loss(inputs, targets, num_boxes):
+    """
+    Compute the DICE loss, similar to generalized IOU for masks
+    
+    Args:
+        inputs: A float tensor of arbitrary shape (predictions)
+        targets: A float tensor with the same shape as inputs (binary targets 0/1)
+        num_boxes: Number of positive boxes for normalization
+    """
+    inputs = inputs.sigmoid()
+    numerator = 2 * (inputs * targets).sum(1)
+    denominator = inputs.sum(1) + targets.sum(1)
+    loss = 1 - (numerator + 1) / (denominator + 1)  # +1 for numerical stability
+    return loss.sum() / num_boxes
 
 
