@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple
 class MHAttentionMap(nn.Module):
     """Multi-Head Attention Map for generating mask attention from queries"""
 
-    def __init__(self, query_dim: int, hidden_dim: int, num_heads: int = 4, dropout: float = 0.0, bias: bool = False):
+    def __init__(self, query_dim: int, hidden_dim: int, num_heads: int = 2, dropout: float = 0.0, bias: bool = False):
         super().__init__()
         self.num_heads = num_heads
         self.hidden_dim = hidden_dim
@@ -64,7 +64,7 @@ class SimpleMaskHead(nn.Module):
     Takes the attention map from MHAttentionMap and refines it.
     Outputs masks at a fixed resolution (e.g., H/4 x W/4 of the input image).
     """
-    def __init__(self, hidden_dim: int, num_queries: int, num_convs: int = 3, mask_out_stride: int = 4):
+    def __init__(self, hidden_dim: int, num_queries: int, num_convs: int = 2, mask_out_stride: int = 4):
         """
         Args:
             hidden_dim (int): Dimension of the transformer features (used for context, though not directly here).
