@@ -13,6 +13,7 @@ import torch.nn.init as init
 from .denoising import get_contrastive_denoising_training_group
 from .utils import deformable_attention_core_func, get_activation, inverse_sigmoid
 from .utils import bias_init_with_prob
+from .mask_head import MHAttentionMap, SimpleMaskHead
 
 
 from src.core import register
@@ -248,6 +249,7 @@ class TransformerDecoder(nn.Module):
         dec_out_bboxes = []
         dec_out_logits = []
         ref_points_detach = F.sigmoid(ref_points_unact)
+        hs = []
 
         for i, layer in enumerate(self.layers):
             ref_points_input = ref_points_detach.unsqueeze(2)
@@ -274,8 +276,10 @@ class TransformerDecoder(nn.Module):
             ref_points = inter_ref_bbox
             ref_points_detach = inter_ref_bbox.detach(
             ) if self.training else inter_ref_bbox
+            
+            hs.append(output)
 
-        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits)
+        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(hs)
 
 
 @register
@@ -302,7 +306,9 @@ class RTDETRTransformer(nn.Module):
                  eval_spatial_size=None,
                  eval_idx=-1,
                  eps=1e-2, 
-                 aux_loss=True):
+                 aux_loss=True,
+                 mask_head_num_convs=2,
+                 mask_out_stride=4):
 
         super(RTDETRTransformer, self).__init__()
         assert position_embed_type in ['sine', 'learned'], \
@@ -322,6 +328,8 @@ class RTDETRTransformer(nn.Module):
         self.num_decoder_layers = num_decoder_layers
         self.eval_spatial_size = eval_spatial_size
         self.aux_loss = aux_loss
+        self.mask_head_num_convs = mask_head_num_convs
+        self.mask_out_stride = mask_out_stride
 
         # backbone feature projection
         self._build_input_proj_layer(feat_channels)
@@ -362,9 +370,21 @@ class RTDETRTransformer(nn.Module):
             for _ in range(num_decoder_layers)
         ])
 
-        # init encoder output anchors and valid_mask
+        # initencoder output anchors and valid_mask
         if self.eval_spatial_size:
             self.anchors, self.valid_mask = self._generate_anchors()
+            
+        self.bbox_attention = MHAttentionMap(query_dim=hidden_dim,
+                                             hidden_dim=hidden_dim, # Key dim matches query dim here
+                                             num_heads=nhead,
+                                             dropout=0.0)
+
+        # Replace the old mask head with the simple one
+        self.mask_head = SimpleMaskHead(hidden_dim=hidden_dim,
+                                        num_queries=num_queries,
+                                        num_convs=mask_head_num_convs,
+                                        mask_out_stride=self.mask_out_stride)    
+        
 
         self._reset_parameters()
 
@@ -537,7 +557,7 @@ class RTDETRTransformer(nn.Module):
             self._get_decoder_input(memory, spatial_shapes, denoising_class, denoising_bbox_unact)
 
         # decoder
-        out_bboxes, out_logits = self.decoder(
+        out_bboxes, out_logits, hs = self.decoder(
             target,
             init_ref_points_unact,
             memory,
@@ -547,6 +567,29 @@ class RTDETRTransformer(nn.Module):
             self.dec_score_head,
             self.query_pos_head,
             attn_mask=attn_mask)
+        
+        # --- Mask Prediction ---
+        # Use the final layer's decoder output as queries for the mask attention
+        mask_queries = hs[-1] # Shape: [B, Q_total, C]
+
+        # If denoising is active, split queries back.
+        # We typically only want masks for the actual object queries, not the denoising ones.
+        if dn_meta is not None:
+            # Q_total = dn_num_split[0] (dn queries) + dn_num_split[1] (object queries)
+            # We want the second part: mask_queries corresponding to object queries
+            mask_queries = torch.split(mask_queries, dn_meta['dn_num_split'], dim=1)[1]
+            # Now mask_queries has shape [B, num_queries, C]
+
+        # Generate attention map using the object queries and encoder memory
+        # MHAttentionMap needs spatial_shapes corresponding to 'memory'
+        # Output bbox_masks shape: [B, num_queries, H_attn, W_attn] (e.g., [1, 300, 80, 80])
+        # Note: MHAttentionMap uses spatial_shapes[0] by default in your implementation
+        bbox_masks = self.bbox_attention(mask_queries, memory, spatial_shapes)
+
+        # Predict masks using the simple mask head
+        # Input: attention_map [B, Q, H_attn, W_attn], target_img_size (H_orig, W_orig)
+        # Output seg_masks shape: [B, Q, H_out, W_out] (e.g., [1, 300, 160, 160])
+        seg_masks = self.mask_head(bbox_masks, [640, 640])
 
         if self.training and dn_meta is not None:
             dn_out_bboxes, out_bboxes = torch.split(out_bboxes, dn_meta['dn_num_split'], dim=2)
