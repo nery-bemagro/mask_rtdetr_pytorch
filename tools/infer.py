@@ -3,7 +3,7 @@ import torch.nn as nn
 import torchvision.transforms as T
 from torch.cuda.amp import autocast
 import numpy as np 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageColor
 import os 
 import sys 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
@@ -98,24 +98,81 @@ def merge_predictions(predictions, slice_coordinates, orig_image_size, slice_wid
         merged_boxes.extend(valid_boxes)
         merged_scores.extend(valid_scores)
     return np.array(merged_labels), np.array(merged_boxes), np.array(merged_scores)
-def draw(images, labels, boxes, scores, thrh = 0.6, path = ""):
-    for i, im in enumerate(images):
-        draw = ImageDraw.Draw(im)
-        scr = scores[i]
-        lab = labels[i][scr > thrh]
-        box = boxes[i][scr > thrh]
-        scrs = scores[i][scr > thrh]
-        for j,b in enumerate(box):
-            draw.rectangle(list(b), outline='red',)
-            draw.text((b[0], b[1]), text=f"label: {lab[j].item()} {round(scrs[j].item(),2)}", font=ImageFont.load_default(), fill='blue')
-        if path == "":
-            im.save(f'results_{i}.jpg')
-        else:
-            im.save(path)
-            
-def main(args, ):
-    """main
+  
+def draw(images, labels, boxes, scores, masks_list=None, thrh=0.6, path=""):
     """
+    Draw bounding boxes, labels, scores, and masks on images.
+    Masks are assumed to be already binarized (0 or 1 values).
+    """
+    # Define colors for different classes (for boxes only)
+    colors = [
+        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+    ]
+    
+    # Create a default font
+    try:
+        font = ImageFont.truetype("arial.ttf", 12)
+    except:
+        font = ImageFont.load_default()
+    
+    for i, im in enumerate(images):
+        # Create a copy to draw on
+        img = im.copy().convert("RGBA")
+        draw = ImageDraw.Draw(img, "RGBA")
+        
+        # Get detections above threshold
+        scr = scores[i]
+        valid_idx = scr > thrh
+        lab = labels[i][valid_idx]
+        box = boxes[i][valid_idx]
+        scrs = scores[i][valid_idx]
+        
+        # Draw masks first (so boxes appear on top)
+        if masks_list is not None and i < len(masks_list) and masks_list[i] is not None:
+            masks = masks_list[i][valid_idx]
+            
+            # Create a black layer for all masks
+            black_layer = Image.new("RGBA", img.size, (0, 0, 0, 255))
+            mask_combined = Image.new("L", img.size, 0)
+            
+            # Combine all masks for this image
+            for mask in masks:
+                # Convert binary mask to PIL Image (0-255)
+                mask_img = Image.fromarray((mask * 255).astype(np.uint8), mode='L')
+                # Paste onto combined mask
+                mask_combined.paste(255, (0, 0), mask_img)
+            
+            # Apply combined mask to black layer
+            black_layer.putalpha(mask_combined)
+            # Composite with original image
+            img = Image.alpha_composite(img, black_layer)
+            draw = ImageDraw.Draw(img, "RGBA")  # Refresh draw object
+        
+        # Draw bounding boxes and labels
+        for j, b in enumerate(box):
+            color = ImageColor.getrgb(colors[int(lab[j]) % len(colors)])
+            
+            # Draw bounding box
+            draw.rectangle(list(b), outline=color + (255,), width=2)
+            
+            # Draw label
+            text = f"{int(lab[j])}: {scrs[j]:.2f}"
+            text_bbox = draw.textbbox((0, 0), text, font=font)
+            text_bg = [
+                b[0], b[1],
+                b[0] + (text_bbox[2]-text_bbox[0]) + 4,
+                b[1] + (text_bbox[3]-text_bbox[1]) + 4
+            ]
+            draw.rectangle(text_bg, fill=color + (255,))
+            draw.text((b[0]+2, b[1]+2), text, font=font, fill=(255,255,255,255))
+        
+        # Save result
+        output_path = f"results_{i}.jpg" if path == "" else path
+        img.convert("RGB").save(output_path)
+
+def main(args, ):
+    """main function"""
     cfg = YAMLConfig(args.config, resume=args.resume)
     print(cfg)
     if args.resume:
@@ -126,8 +183,10 @@ def main(args, ):
             state = checkpoint['model']
     else:
         raise AttributeError('Only support resume to load model.state_dict by now.')
-    # NOTE load train mode state -> convert to deploy mode
+    
+    # Load and deploy model
     cfg.model.load_state_dict(state)
+    
     class Model(nn.Module):
         def __init__(self, ) -> None:
             super().__init__()
@@ -136,11 +195,12 @@ def main(args, ):
             
         def forward(self, images, orig_target_sizes):
             outputs = self.model(images)
-            outputs = self.postprocessor(outputs, orig_target_sizes)
-            print(len(outputs))
-            return outputs
+            return self.postprocessor(outputs, orig_target_sizes)
     
     model = Model().to(args.device)
+    model.eval()
+    
+    # Load and process image
     im_pil = Image.open(args.im_file).convert('RGB')
     w, h = im_pil.size
     orig_size = torch.tensor([w, h])[None].to(args.device)
@@ -150,37 +210,44 @@ def main(args, ):
         T.ToTensor(),
     ])
     im_data = transforms(im_pil)[None].to(args.device)
-    if args.sliced:
-        num_boxes = args.numberofboxes
+
+    # Run inference
+    with torch.no_grad():
+        result = model(im_data, orig_size)
+    
+    # Process results
+    labels = result[0]['labels'].detach().cpu().numpy()
+    boxes = result[0]['boxes'].detach().cpu().numpy()
+    scores = result[0]['scores'].detach().cpu().numpy()
+    
+    # Handle masks if available
+    masks_list = None
+    if 'masks' in result[0]:
+        masks = result[0]['masks'].detach().cpu().numpy()
+        print("MASKS detected")
         
-        aspect_ratio = w / h
-        num_cols = int(np.sqrt(num_boxes * aspect_ratio)) 
-        num_rows = int(num_boxes / num_cols)
-        slice_height = h // num_rows
-        slice_width = w // num_cols
-        overlap_ratio = 0.2
-        slices, coordinates = slice_image(im_pil, slice_height, slice_width, overlap_ratio)
-        predictions = []
-        for i, slice_img in enumerate(slices):
-            slice_tensor = transforms(slice_img)[None].to(args.device)
-            with autocast():  # Use AMP for each slice
-                output = model(slice_tensor, torch.tensor([[slice_img.size[0], slice_img.size[1]]]).to(args.device))
-            torch.cuda.empty_cache() 
-            labels, boxes, scores = output
-            
-            labels = labels.cpu().detach().numpy()
-            boxes = boxes.cpu().detach().numpy()
-            scores = scores.cpu().detach().numpy()
-            predictions.append((labels, boxes, scores))
-        
-        merged_labels, merged_boxes, merged_scores = merge_predictions(predictions, coordinates, (h, w), slice_width, slice_height)
-        labels, boxes, scores = postprocess(merged_labels, merged_boxes, merged_scores)
-    else:
-        output = model(im_data, orig_size)
-        labels, boxes, scores = output
-        
-    draw([im_pil], labels, boxes, scores, 0.6)
-  
+        # Resize masks to original image size
+        resized_masks = []
+        for mask in masks:
+            # Convert to PIL and resize
+            mask_img = Image.fromarray((mask[0] * 255).astype(np.uint8))
+            mask_img = mask_img.resize((w, h), Image.BILINEAR)
+            # Convert back to numpy and threshold
+            resized_mask = (np.array(mask_img) > 128).astype(np.float32)
+            resized_masks.append(resized_mask)
+        masks_list = [np.array(resized_masks)]
+    
+    # Draw results
+    draw(
+        [im_pil], 
+        [labels], 
+        [boxes], 
+        [scores], 
+        masks_list=masks_list,
+        thrh=0.5,
+        path=args.output if hasattr(args, 'output') else ""
+    )
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
@@ -192,8 +259,4 @@ if __name__ == '__main__':
     parser.add_argument('-nc', '--numberofboxes', type=int, default=25)
     args = parser.parse_args()
     main(args)
-
-
-
-
 

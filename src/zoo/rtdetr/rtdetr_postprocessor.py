@@ -86,13 +86,13 @@ class RTDETRPostProcessor(nn.Module):
                 ).squeeze(1)  # [Q, H_orig, W_orig]
                 res['masks'] = (resized_mask > 0.5).float()
             results.append(res)
-        
+            
         return results
         
 
     def deploy(self, ):
         self.eval()
-        self.deploy_mode = True
+        self.deploy_mode = False
         return self 
 
     @property
