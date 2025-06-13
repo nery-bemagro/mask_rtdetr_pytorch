@@ -39,11 +39,11 @@ optimizer:
   params: 
     - 
       params: '^(?=.*backbone)(?=.*norm).*$'
-      lr: 0.00001
+      lr: 0.0001
       weight_decay: 0.
     - 
       params: '^(?=.*backbone)(?!.*norm).*$'
-      lr: 0.00001
+      lr: 0.0001
     - 
       params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bias)).*$'
       weight_decay: 0.

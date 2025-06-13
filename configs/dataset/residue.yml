@@ -7,8 +7,8 @@ train_dataloader:
   type: DataLoader
   dataset: 
     type: CocoDetection
-    img_folder: /home/nery/datasets/residue_augmented-12-5/train/images
-    ann_file: /home/nery/datasets/residue_augmented-12-5/train/annotations.json
+    img_folder: /home/nery_neto_bemagro_com/datasets/residue_augmented-12-5/train/images
+    ann_file: /home/nery_neto_bemagro_com/datasets/residue_augmented-12-5/train/annotations.json
     transforms:
       type: Compose
       ops: ~
@@ -22,8 +22,8 @@ val_dataloader:
   type: DataLoader
   dataset: 
     type: CocoDetection
-    img_folder: /home/nery/datasets/residue_augmented-12-5/val/images
-    ann_file: /home/nery/datasets/residue_augmented-12-5/val/annotations.json
+    img_folder: /home/nery_neto_bemagro_com/datasets/residue_augmented-12-5/val/images
+    ann_file: /home/nery_neto_bemagro_com/datasets/residue_augmented-12-5/val/annotations.json
     transforms:
       type: Compose
       ops: ~ 
