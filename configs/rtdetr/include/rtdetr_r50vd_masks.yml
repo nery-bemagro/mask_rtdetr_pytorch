@@ -65,7 +65,7 @@ RTDETRPostProcessor:
 
 
 SetCriterion:
-  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2,}
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2, loss_mask: 3, loss_dice: 2}
   losses: ['vfl', 'boxes', 'masks']
   alpha: 0.75
   gamma: 2.0
