@@ -8,10 +8,13 @@ __pycache__/
 
 # weights
 *.pth
+*.jpg
+*.png
 
 # Distribution / packaging
 .Python
 build/
+binary_masks/
 output/
 develop-eggs/
 dist/

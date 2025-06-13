@@ -170,13 +170,13 @@ def draw(images, labels, boxes, scores, masks_list=None, thrh=0.6, path=""):
         # Save result
         output_path = f"results_{i}.jpg" if path == "" else path
         img.convert("RGB").save(output_path)
-
-def main(args, ):
+        
+def main(args):
     """main function"""
     cfg = YAMLConfig(args.config, resume=args.resume)
     print(cfg)
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location='cpu') 
+        checkpoint = torch.load(args.resume, map_location='cpu')
         if 'ema' in checkpoint:
             state = checkpoint['ema']['module']
         else:
@@ -192,7 +192,7 @@ def main(args, ):
             super().__init__()
             self.model = cfg.model.deploy()
             self.postprocessor = cfg.postprocessor.deploy()
-            
+        
         def forward(self, images, orig_target_sizes):
             outputs = self.model(images)
             return self.postprocessor(outputs, orig_target_sizes)
@@ -204,13 +204,12 @@ def main(args, ):
     im_pil = Image.open(args.im_file).convert('RGB')
     w, h = im_pil.size
     orig_size = torch.tensor([w, h])[None].to(args.device)
-    
     transforms = T.Compose([
         T.Resize((640, 640)),  
         T.ToTensor(),
     ])
     im_data = transforms(im_pil)[None].to(args.device)
-
+    
     # Run inference
     with torch.no_grad():
         result = model(im_data, orig_size)
@@ -225,7 +224,6 @@ def main(args, ):
     if 'masks' in result[0]:
         masks = result[0]['masks'].detach().cpu().numpy()
         print("MASKS detected")
-        
         # Resize masks to original image size
         resized_masks = []
         for mask in masks:
@@ -237,16 +235,26 @@ def main(args, ):
             resized_masks.append(resized_mask)
         masks_list = [np.array(resized_masks)]
     
+    # Create a directory to save binary masks
+    masks_dir = 'binary_masks'
+    os.makedirs(masks_dir, exist_ok=True)
+    
+    # Save the masks
+    for i, mask in enumerate(resized_masks):
+        mask_img = Image.fromarray((mask * 255).astype(np.uint8), mode='L')
+        mask_img.save(os.path.join(masks_dir, f'mask_{i}.png'))
+    
     # Draw results
     draw(
-        [im_pil], 
-        [labels], 
-        [boxes], 
-        [scores], 
+        [im_pil],
+        [labels],
+        [boxes],
+        [scores],
         masks_list=masks_list,
         thrh=0.5,
         path=args.output if hasattr(args, 'output') else ""
     )
+
 
 if __name__ == '__main__':
     import argparse
