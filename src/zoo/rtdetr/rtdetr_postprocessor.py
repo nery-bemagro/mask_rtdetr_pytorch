@@ -206,6 +206,6 @@ class RTDETRPostProcessor(nn.Module):
     @property
     def iou_types(self, ):
         # If you are only evaluating bounding boxes:
-        return ('bbox', )
+        # return ('bbox', )
         # If you are evaluating segmentation as well:
-        # return ('bbox', 'segm')
+        return ('bbox', 'segm')

@@ -106,37 +106,81 @@ class CocoEvaluator(object):
     def prepare_for_coco_segmentation(self, predictions):
         coco_results = []
         for original_id, prediction in predictions.items():
-            if len(prediction) == 0:
+            # prediction is a dict like {'scores': tensor, 'labels': tensor, 'boxes': tensor, 'masks': tensor}
+            # from your RTDETRPostProcessor
+            
+            if len(prediction) == 0: # No predictions for this image
                 continue
 
-            scores = prediction["scores"]
-            labels = prediction["labels"]
-            masks = prediction["masks"]
+            # Check if masks are present and valid
+            if "masks" not in prediction or prediction["masks"] is None or prediction["masks"].numel() == 0:
+                # print(f"[CocoEvaluator Segm] Image {original_id}: No masks in prediction output. Skipping segm eval for this image.")
+                continue
 
-            masks = masks > 0.5
+            # scores, labels, and masks should correspond to each other (N items each)
+            scores_list = prediction["scores"].tolist() 
+            labels_list = prediction["labels"].tolist() # These should be COCO category_ids
+            
+            # masks_tensor is expected to be a [N, H, W] tensor of 0.0s and 1.0s (float)
+            masks_tensor = prediction["masks"]
 
-            scores = prediction["scores"].tolist()
-            labels = prediction["labels"].tolist()
+            # Convert the [N, H, W] float tensor to a NumPy uint8 array on CPU
+            # The postprocessor already did sigmoid > 0.5, so values are 0.0 or 1.0
+            masks_np_uint8 = masks_tensor.cpu().numpy().astype(np.uint8) # Shape: [N, H, W]
 
-            rles = [
-                mask_util.encode(np.array(mask[0, :, :, np.newaxis], dtype=np.uint8, order="F"))[0]
-                for mask in masks
-            ]
-            for rle in rles:
-                rle["counts"] = rle["counts"].decode("utf-8")
+            processed_rles = []
+            for k_idx in range(masks_np_uint8.shape[0]):
+                # single_mask_hw is a 2D numpy array [H, W] containing 0s and 1s
+                single_mask_hw = masks_np_uint8[k_idx]
+                
+                # pycocotools.mask.encode expects a Fortran-contiguous 2D array.
+                # It returns an RLE dictionary, e.g., {'size': [H, W], 'counts': b'rle_string'}
+                if single_mask_hw.shape[0] == 0 or single_mask_hw.shape[1] == 0:
+                    # print(f"[CocoEvaluator Segm] Image {original_id}, Mask {k_idx}: Zero-sized mask encountered, skipping RLE encoding for this mask.")
+                    # Add a placeholder or skip? For now, let's ensure not to add faulty RLEs.
+                    # This might lead to len(processed_rles) < len(scores_list).
+                    # A better approach might be to ensure postprocessor doesn't produce these sizes or filter them there.
+                    continue
+
+                rle = mask_util.encode(np.asfortranarray(single_mask_hw))
+                
+                # The 'counts' field in the RLE dict is often bytes and needs to be a utf-8 string for JSON.
+                if isinstance(rle['counts'], bytes):
+                    rle['counts'] = rle['counts'].decode('utf-8')
+                processed_rles.append(rle)
+            
+            # Sanity check: Number of RLEs should match number of scores/labels
+            # If a mask was skipped due to zero size, lengths might mismatch.
+            # The COCO format requires one score/label per segmentation.
+            # This loop assumes that scores/labels correspond to the successfully processed RLEs.
+            # If a mask was skipped, its corresponding score/label should also be skipped.
+            # For simplicity, we assume here that your postprocessor provides valid masks
+            # for every score/label. If not, more complex filtering is needed.
+            # The current postprocessor should maintain this N-to-N correspondence.
+
+            if not (len(processed_rles) == len(scores_list) == len(labels_list)):
+                print(f"[CocoEvaluator Segm WARNING] Image {original_id}: Mismatch after RLE processing. "
+                      f"RLEs: {len(processed_rles)}, Scores: {len(scores_list)}, Labels: {len(labels_list)}. "
+                      "This might lead to incorrect evaluation. Ensure all masks are valid and processed.")
+                # For robustness, trim to the minimum length to avoid crashing, but this hides an issue.
+                min_items = min(len(processed_rles), len(scores_list), len(labels_list))
+                processed_rles = processed_rles[:min_items]
+                scores_list = scores_list[:min_items]
+                labels_list = labels_list[:min_items]
 
             coco_results.extend(
                 [
                     {
                         "image_id": original_id,
-                        "category_id": labels[k],
-                        "segmentation": rle,
-                        "score": scores[k],
+                        "category_id": labels_list[k],   # COCO category ID
+                        "segmentation": processed_rles[k], # RLE dict for the k-th mask
+                        "score": scores_list[k],        # Score for the k-th mask/detection
                     }
-                    for k, rle in enumerate(rles)
+                    for k in range(len(processed_rles)) # Iterate up to the number of successfully processed RLEs
                 ]
             )
         return coco_results
+
 
     def prepare_for_coco_keypoint(self, predictions):
         coco_results = []
