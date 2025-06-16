@@ -84,7 +84,8 @@ class RTDETRPostProcessor(nn.Module):
                     mode='bilinear', 
                     align_corners=False
                 ).squeeze(1)  # [Q, H_orig, W_orig]
-                res['masks'] = (resized_mask > 0.5).float()
+                prob_mask = torch.sigmoid(resized_mask)
+                res['masks'] = (prob_mask > 0.5).float()
             results.append(res)
             
         return results

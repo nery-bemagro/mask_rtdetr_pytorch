@@ -138,6 +138,8 @@ class SimpleMaskHead(nn.Module):
 
         # Apply convolutions
         x = self.conv_layers(x) # Shape: [B*Q, 1, H_attn, W_attn]
+        
+        print(f"[MaskHead] Post-conv output: min={x.min().item()}, max={x.max().item()}, mean={x.mean().item()}")
 
         # Upsample to the target output size (e.g., H/4, W/4)
         H_out = target_img_size[0] // self.mask_out_stride
@@ -148,6 +150,8 @@ class SimpleMaskHead(nn.Module):
 
         # Reshape back to [B, Q, H_out, W_out]
         masks = x.view(B, Q, H_out, W_out)
+        
+        print(f"[MaskHead] Final masks: min={masks.min().item()}, max={masks.max().item()}, mean={masks.mean().item()}")
 
         # Output raw logits, sigmoid should be applied outside or in the loss function (BCEWithLogitsLoss)
         return masks

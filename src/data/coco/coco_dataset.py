@@ -17,6 +17,11 @@ from pycocotools import mask as coco_mask
 
 from src.core import register
 
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+from pathlib import Path
+
 __all__ = ['CocoDetection']
 
 
@@ -31,14 +36,23 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         self.prepare = ConvertCocoPolysToMask(True, remap_mscoco_category)
         self.img_folder = img_folder
         self.ann_file = ann_file
-        self.return_masks = return_masks
+        self.return_masks = True
         self.remap_mscoco_category = remap_mscoco_category
+        self.debug_mask = False
+        self.debug_output_dir = '/home/nery_neto_bemagro_com/mask_rtdetr_pytorch/output/debug_masks'
+        self.debug_count = 0
+        
+        if self.debug_mask:
+            os.makedirs(self.debug_output_dir, exist_ok=True)
 
     def __getitem__(self, idx):
         img, target = super(CocoDetection, self).__getitem__(idx)
         image_id = self.ids[idx]
         target = {'image_id': image_id, 'annotations': target}
         img, target = self.prepare(img, target)
+        
+        if self.debug_mask and self.return_masks and 'masks' in target:
+            self._save_mask_debug(img, target, idx)
 
         # ['boxes', 'masks', 'labels']:
         if 'boxes' in target:
@@ -54,6 +68,77 @@ class CocoDetection(torchvision.datasets.CocoDetection):
             img, target = self._transforms(img, target)
             
         return img, target
+    
+    def _save_mask_debug(self, img, target, idx):
+        """Save clean mask visualization with all masks in white on black background"""
+        # Get masks and boxes
+        masks = target['masks'].numpy()  # Shape: [N, H, W]
+        boxes = target['boxes'].numpy()
+        labels = target['labels'].numpy()
+        
+        # Create black background (3 channels for RGB)
+        h, w = masks.shape[1], masks.shape[2]
+        black_bg = np.zeros((h, w, 3), dtype=np.uint8)
+        
+        # Combine all masks into single white mask
+        combined_mask = np.zeros((h, w), dtype=np.uint8)
+        for mask in masks:
+            combined_mask = np.bitwise_or(combined_mask, mask.astype(np.uint8))
+        white_mask = (combined_mask * 255).astype(np.uint8)  # Convert to 0-255
+        
+        # Create figure
+        plt.figure(figsize=(12, 12))
+        
+        # Show black background
+        plt.imshow(black_bg)
+        
+        # Overlay white mask (all objects combined)
+        plt.imshow(white_mask, cmap='gray', alpha=0.9, vmin=0, vmax=255)
+        
+        # Draw bounding boxes for all objects
+        for i, (box, label) in enumerate(zip(boxes, labels)):
+            # Create rectangle patch
+            rect = plt.Rectangle(
+                (box[0], box[1]),
+                box[2] - box[0],
+                box[3] - box[1],
+                linewidth=2,
+                edgecolor='red',
+                facecolor='none'
+            )
+            plt.gca().add_patch(rect)
+            
+            # Add class label
+            plt.text(
+                box[0], box[1] - 5,
+                f'Obj {i} (Class {label})',
+                color='red',
+                fontsize=10,
+                bbox=dict(facecolor='black', alpha=0.7, edgecolor='none')
+            )
+        
+        # Add title with info
+        plt.title(
+            f"Image ID: {target['image_id'].item()}\n"
+            f"Objects: {len(masks)}\n"
+            f"Mask Pixels: {100*combined_mask.mean():.1f}%",
+            color='white'
+        )
+        plt.axis('off')
+        
+        # Save high quality image
+        debug_file = Path(self.debug_output_dir) / f"mask_debug_{self.debug_count:04d}_img{idx}.png"
+        plt.savefig(
+            debug_file,
+            dpi=150,
+            bbox_inches='tight',
+            pad_inches=0.05,
+            facecolor='black'
+        )
+        plt.close()
+        
+        print(f"Saved combined mask visualization to {debug_file}")
+        self.debug_count += 1
 
     def extra_repr(self) -> str:
         s = f' img_folder: {self.img_folder}\n ann_file: {self.ann_file}\n'
