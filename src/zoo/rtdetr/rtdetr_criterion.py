@@ -175,12 +175,10 @@ class SetCriterion(nn.Module):
 
     def loss_masks(self, outputs, targets, indices, num_boxes):
         assert "pred_masks" in outputs
-        print("[Criterion] Entering mask loss calculation")
 
         src_idx = self._get_src_permutation_idx(indices)
         tgt_idx = self._get_tgt_permutation_idx(indices)
         src_masks = outputs["pred_masks"]
-        print(f"[Criterion] Raw mask outputs: min={src_masks.min().item()}, max={src_masks.max().item()}, mean={src_masks.mean().item()}")
         src_masks = src_masks[src_idx]
         
         # Collect target masks directly without nested tensor
@@ -199,17 +197,11 @@ class SetCriterion(nn.Module):
         
         src_masks = torch.clamp(src_masks, -10, 10)
         
-        print(f"[Criterion] Selected src_masks: {src_masks.shape}")
-        print(f"[Criterion] Selected target_masks: {target_masks.shape}")
-
-        # Check target masks aren't empty
-        print(f"[Criterion] Target masks non-zero: {(target_masks > 0).sum().item()}/{target_masks.numel()}")
         
         losses = {
             "loss_mask": sigmoid_focal_loss(src_masks, target_masks, num_boxes),
             "loss_dice": dice_loss(src_masks, target_masks, num_boxes),
         }
-        print(f"[Criterion] Mask loss: {losses['loss_mask'].item()}, Dice loss: {losses['loss_dice'].item()}")
         return losses
 
     def _get_src_permutation_idx(self, indices):

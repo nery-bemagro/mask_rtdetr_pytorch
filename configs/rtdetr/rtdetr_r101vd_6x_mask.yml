@@ -1,0 +1,33 @@
+__include__: [
+  '../dataset/residue.yml',
+  '../runtime.yml',
+  './include/dataloader.yml',
+  './include/optimizer.yml',
+    './include/rtdetr_r50vd_masks.yml',
+]
+
+PResNet:
+  depth: 101
+
+
+HybridEncoder:
+  # intra
+  hidden_dim: 384
+  dim_feedforward: 2048
+
+
+RTDETRTransformer:
+  feat_channels: [384, 384, 384]
+  mask_head:
+    type: MaskHead
+    input_dim: 256
+    hidden_dim: 256
+    num_heads: 2
+
+
+optimizer:
+  type: AdamW
+  params: 
+    - 
+      params: 'backbone'
+      lr: 0.0001

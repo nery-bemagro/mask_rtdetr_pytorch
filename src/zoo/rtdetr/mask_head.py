@@ -1,4 +1,5 @@
 import torch
+import math
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional, Tuple
@@ -77,35 +78,31 @@ class SimpleMaskHead(nn.Module):
         super().__init__()
         self.num_queries = num_queries
         self.mask_out_stride = mask_out_stride
-        self.hidden_dim = hidden_dim # Not directly used in this simple version
-
+        self.hidden_dim = hidden_dim  # Not directly used in this simple version
         # Input to this head is the attention map [B, Q, H_attn, W_attn]
         # MHAttentionMap outputs the mean over heads, so input channel is 1 after reshaping
         in_channels = 1
         # Use a fixed intermediate channel size, e.g., 64 or 128
         inter_channels = 64
-
         convs = []
         # Reshape input [B, Q, H, W] -> [B*Q, 1, H, W]
         # Layer 1
         convs.append(nn.Conv2d(in_channels, inter_channels, kernel_size=3, padding=1, bias=False))
         convs.append(nn.BatchNorm2d(inter_channels))
         convs.append(nn.ReLU())
-
         # Intermediate layers
         for _ in range(num_convs - 2):
             convs.append(nn.Conv2d(inter_channels, inter_channels, kernel_size=3, padding=1, bias=False))
             convs.append(nn.BatchNorm2d(inter_channels))
             convs.append(nn.ReLU())
-
-        # Final layer producing 1 output channel (mask logit)
-        convs.append(nn.Conv2d(inter_channels, 1, kernel_size=1)) # 1x1 conv for final prediction
-
+        # Define the final convolutional layer separately
+        self.final_conv = nn.Conv2d(inter_channels, 1, kernel_size=1)
+        # Add the final convolutional layer to the list of convs
+        convs.append(self.final_conv)
         self.conv_layers = nn.Sequential(*convs)
-
         # Initialize weights
         self._reset_parameters()
-
+    
     def _reset_parameters(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -115,8 +112,14 @@ class SimpleMaskHead(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-
-
+        # Calculate the bias for the final convolutional layer
+        # Desired initial probability for foreground
+        pi = 0.01
+        # Calculate the bias
+        b = -math.log((1 - pi) / pi)
+        # Set the bias for the final_conv
+        nn.init.constant_(self.final_conv.bias, b)
+    
     def forward(self, attention_map: torch.Tensor, target_img_size: Tuple[int, int]) -> torch.Tensor:
         """
         Args:
@@ -124,7 +127,6 @@ class SimpleMaskHead(nn.Module):
                                           Shape: [B, Q, H_attn, W_attn]
             target_img_size (Tuple[int, int]): The original input image size (H, W). Used to determine
                                               the final output mask size based on mask_out_stride.
-
         Returns:
             torch.Tensor: Predicted masks. Shape: [B, Q, H_out, W_out]
                           where H_out = target_img_size[0] / mask_out_stride
@@ -132,26 +134,10 @@ class SimpleMaskHead(nn.Module):
         """
         B, Q, H_attn, W_attn = attention_map.shape
         assert Q == self.num_queries
-
         # Reshape for convolution: [B, Q, H, W] -> [B*Q, 1, H, W]
         x = attention_map.view(B * Q, 1, H_attn, W_attn)
-
-        # Apply convolutions
-        x = self.conv_layers(x) # Shape: [B*Q, 1, H_attn, W_attn]
-        
-        print(f"[MaskHead] Post-conv output: min={x.min().item()}, max={x.max().item()}, mean={x.mean().item()}")
-
-        # Upsample to the target output size (e.g., H/4, W/4)
-        H_out = target_img_size[0] // self.mask_out_stride
-        W_out = target_img_size[1] // self.mask_out_stride
-        # Note: If H_attn/W_attn is already H_out/W_out, interpolation does nothing.
-        # If H_attn/W_attn is smaller, it upsamples. If larger, it downsamples.
-        x = F.interpolate(x, size=(H_out, W_out), mode='bilinear', align_corners=False)
-
+        # Apply convolutional layers
+        x = self.conv_layers(x)  # Shape: [B*Q, 1, H_out, W_out]
         # Reshape back to [B, Q, H_out, W_out]
-        masks = x.view(B, Q, H_out, W_out)
-        
-        print(f"[MaskHead] Final masks: min={masks.min().item()}, max={masks.max().item()}, mean={masks.mean().item()}")
-
-        # Output raw logits, sigmoid should be applied outside or in the loss function (BCEWithLogitsLoss)
+        masks = x.view(B, Q, *x.shape[-2:])
         return masks
