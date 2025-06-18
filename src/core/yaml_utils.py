@@ -20,6 +20,12 @@ def register(cls: type):
     '''
     if cls.__name__ in GLOBAL_CONFIG:
         raise ValueError('{} already registered'.format(cls.__name__))
+    
+    if cls.__name__ == 'Swin':
+        print("STARTING SWIN CONFIG")
+        
+    if cls.__name__ == 'PResNet':
+        print("STARTING PRESNET CONFIG")
 
     if inspect.isfunction(cls):
         GLOBAL_CONFIG[cls.__name__] = cls
@@ -108,17 +114,20 @@ def create(type_or_name, **kwargs):
 
     # inject
     for k in cfg['_inject']:
+        print(f"DEBUG: Injecting component '{k}'")
         _k = cfg[k]
 
         if _k is None:
             continue
-
+                
         if isinstance(_k, str):            
             if _k not in GLOBAL_CONFIG:
                 raise ValueError(f'Missing inject config of {_k}.')
 
             _cfg = GLOBAL_CONFIG[_k]
-            
+
+            # import pdb
+            # pdb.set_trace()
             if isinstance(_cfg, dict):
                 cls_kwargs[k] = create(_cfg['_name'])
             else:

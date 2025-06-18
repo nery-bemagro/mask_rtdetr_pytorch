@@ -65,7 +65,7 @@ class SimpleMaskHead(nn.Module):
     Takes the attention map from MHAttentionMap and refines it.
     Outputs masks at a fixed resolution (e.g., H/4 x W/4 of the input image).
     """
-    def __init__(self, hidden_dim: int, num_queries: int, num_convs: int = 2, mask_out_stride: int = 4):
+    def __init__(self, hidden_dim: int, num_queries: int, num_convs: int = 4, mask_out_stride: int = 4):
         """
         Args:
             hidden_dim (int): Dimension of the transformer features (used for context, though not directly here).

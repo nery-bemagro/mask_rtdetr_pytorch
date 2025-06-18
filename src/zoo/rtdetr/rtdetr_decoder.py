@@ -307,7 +307,7 @@ class RTDETRTransformer(nn.Module):
                  eval_idx=-1,
                  eps=1e-2, 
                  aux_loss=True,
-                 mask_head_num_convs=6,
+                 mask_head_num_convs=4,
                  mask_out_stride=4):
 
         super(RTDETRTransformer, self).__init__()

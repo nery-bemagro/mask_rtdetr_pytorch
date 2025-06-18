@@ -3,17 +3,18 @@ __include__: [
   '../runtime.yml',
   './include/dataloader.yml',
   './include/optimizer.yml',
-    './include/rtdetr_r50vd_masks.yml',
+  './include/rtdetr_swin.yml'  # Base config
 ]
 
-PResNet:
-  depth: 101
-  
-output_dir: ./output/rtdetr_r101vd_6x_mask
+Swin:
+  variant: b
+  return_idx: [1, 2, 3]
 
+output_dir: ./output/rtdetr_swin_tiny_6x_mask
 
 HybridEncoder:
-  # intra
+  in_channels: [256, 512, 1024]
+  feat_strides: [8, 16, 32]
   hidden_dim: 384
   dim_feedforward: 2048
 

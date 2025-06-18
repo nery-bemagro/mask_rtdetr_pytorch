@@ -214,7 +214,7 @@ def main(args):
     draw_detections(
         im_pil,
         {'labels': labels_np, 'boxes': boxes_np, 'scores': scores_np, 'masks': masks_np if masks_np_list else None},
-        score_threshold=0.1, # Adjust score threshold as needed
+        score_threshold=0.3, # Adjust score threshold as needed
         output_path=output_file_path
     )
 
