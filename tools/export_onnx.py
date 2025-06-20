@@ -35,12 +35,13 @@ def main(args, ):
         def __init__(self, ) -> None:
             super().__init__()
             self.model = cfg.model.deploy()
-            self.postprocessor = cfg.postprocessor.deploy()
-            print(self.postprocessor.deploy_mode)
+            # self.postprocessor = cfg.postprocessor.deploy()
+            # print(self.postprocessor.deploy_mode)
             
         def forward(self, images, orig_target_sizes):
-            outputs = self.model(images)
-            return self.postprocessor(outputs, orig_target_sizes)
+            return self.model(images)
+            # outputs = self.model(images)
+            # return self.postprocessor(outputs, orig_target_sizes)
     
 
     model = Model()
