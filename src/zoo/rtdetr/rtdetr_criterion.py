@@ -177,27 +177,47 @@ class SetCriterion(nn.Module):
         assert "pred_masks" in outputs
 
         src_idx = self._get_src_permutation_idx(indices)
-        tgt_idx = self._get_tgt_permutation_idx(indices)
+        
         src_masks = outputs["pred_masks"]
         src_masks = src_masks[src_idx]
         
-        # Collect target masks directly without nested tensor
-        target_masks = []
-        for t, (_, J) in zip(targets, indices):
-            target_masks.append(t["masks"][J])
-        target_masks = torch.cat(target_masks, dim=0).to(src_masks)
-        
-        # Upsample predictions to target size
+        target_masks, _ = cat_mask_list([t["masks"][J] for t, (_, J) in zip(targets, indices)])
+        target_masks = target_masks.to(src_masks)
+
+        # Upsample predicted masks to the same size as target masks
         src_masks = F.interpolate(src_masks[:, None], 
-                                size=target_masks.shape[-2:],
-                                mode="bilinear", 
-                                align_corners=False)
-        src_masks = src_masks[:, 0].flatten(1)
+                                  size=target_masks.shape[-2:],
+                                  mode="bilinear", 
+                                  align_corners=False).squeeze(1)
+
+        # <<< --- CORRECTED LOGIC --- >>>
+        target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+
+        # 2. Create a mask from the GT boxes to define the area of interest.
+        H, W = target_masks.shape[-2:]
+        box_masks = torch.zeros_like(target_masks, dtype=torch.float32)
+        boxes_xyxy = box_cxcywh_to_xyxy(target_boxes) * torch.tensor([W, H, W, H], device=target_boxes.device)
+        
+        for i, box in enumerate(boxes_xyxy):
+            x1, y1, x2, y2 = box.round().int()
+            # Clamp coordinates to be within the mask dimensions
+            x1, y1 = torch.clamp(x1, 0, W), torch.clamp(y1, 0, H)
+            x2, y2 = torch.clamp(x2, 0, W), torch.clamp(y2, 0, H)
+            box_masks[i, y1:y2, x1:x2] = 1.0
+
+        # 3. Apply the box mask ONLY to the target.
+        # The target mask is now guaranteed to be zero outside the GT box.
+        # The source mask (prediction) remains untouched.
+        target_masks = target_masks * box_masks
+        
+        # By NOT modifying src_masks, any prediction outside the box will be
+        # compared against a target of 0, thus generating a penalty (loss).
+        # <<< --- End of corrected logic --- >>>
+
+        # Flatten for loss calculation
+        src_masks = src_masks.flatten(1)
         target_masks = target_masks.flatten(1)
-        
-        src_masks = torch.clamp(src_masks, -10, 10)
-        
-        
+
         losses = {
             "loss_mask": sigmoid_focal_loss(src_masks, target_masks, num_boxes),
             "loss_dice": dice_loss(src_masks, target_masks, num_boxes),
@@ -380,3 +400,21 @@ def dice_loss(inputs, targets, num_boxes):
     return loss.sum() / num_boxes
 
 
+def cat_mask_list(mask_list):
+    # from a list of N Tensors of shape (num_obj, H, W)
+    # returns a single tensor of shape (sum(num_obj), H, W)
+    if not mask_list:
+        return torch.empty(0), []
+    
+    max_h = max([m.shape[1] for m in mask_list])
+    max_w = max([m.shape[2] for m in mask_list])
+    
+    padded_masks = []
+    for mask in mask_list:
+        # pad to max_h, max_w
+        n, h, w = mask.shape
+        padded_mask = torch.zeros((n, max_h, max_w), dtype=mask.dtype, device=mask.device)
+        padded_mask[:, :h, :w] = mask
+        padded_masks.append(padded_mask)
+    
+    return torch.cat(padded_masks, dim=0), [(m.shape[1], m.shape[2]) for m in mask_list]

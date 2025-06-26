@@ -1,14 +1,15 @@
+# In your mask_head.py file
+
 import torch
 import math
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional, Tuple
 
-
 class MHAttentionMap(nn.Module):
     """Multi-Head Attention Map for generating mask attention from queries"""
 
-    def __init__(self, query_dim: int, hidden_dim: int, num_heads: int = 2, dropout: float = 0.0, bias: bool = False):
+    def __init__(self, query_dim: int, hidden_dim: int, num_heads: int = 8, dropout: float = 0.0, bias: bool = False): # <<< CHANGED: Default num_heads to 8 to match transformer
         super().__init__()
         self.num_heads = num_heads
         self.hidden_dim = hidden_dim
@@ -54,9 +55,11 @@ class MHAttentionMap(nn.Module):
         # Use only the first level's attention map (highest resolution)
         attn_map = attention_maps[0]  # Shape: [B, num_heads, Q, H, W]
 
-        # print("attn map shape", attn_map.mean(dim=1).shape)
-        
-        return attn_map.mean(dim=1)  # Average across heads
+        # <<< --- KEY CHANGE HERE --- >>>
+        # Instead of averaging heads, we reshape to treat them as channels for the CNN
+        # Old: return attn_map.mean(dim=1)  # Shape: [B, Q, H, W]
+        # New:
+        return attn_map.permute(0, 2, 1, 3, 4)  # Shape: [B, Q, num_heads, H, W]
 
 
 class SimpleMaskHead(nn.Module):
@@ -65,45 +68,45 @@ class SimpleMaskHead(nn.Module):
     Takes the attention map from MHAttentionMap and refines it.
     Outputs masks at a fixed resolution (e.g., H/4 x W/4 of the input image).
     """
-    def __init__(self, hidden_dim: int, num_queries: int, num_convs: int = 4, mask_out_stride: int = 4):
+    def __init__(self, hidden_dim: int, num_queries: int, num_convs: int = 4, mask_out_stride: int = 4, attn_in_channels: int = 8): # <<< CHANGED: Add attn_in_channels
         """
         Args:
-            hidden_dim (int): Dimension of the transformer features (used for context, though not directly here).
-                              Kept for potential future compatibility or modifications.
+            hidden_dim (int): Dimension of the transformer features.
             num_queries (int): Number of object queries.
             num_convs (int): Number of convolutional layers.
             mask_out_stride (int): The stride of the output mask relative to the input image size.
-                                   e.g., 4 means the mask is H/4 x W/4.
+            attn_in_channels (int): Number of input channels from the MHAttentionMap (i.e., num_heads).
         """
         super().__init__()
         self.num_queries = num_queries
         self.mask_out_stride = mask_out_stride
-        self.hidden_dim = hidden_dim  # Not directly used in this simple version
-        # Input to this head is the attention map [B, Q, H_attn, W_attn]
-        # MHAttentionMap outputs the mean over heads, so input channel is 1 after reshaping
-        in_channels = 1
+        self.hidden_dim = hidden_dim
+        self.attn_in_channels = attn_in_channels # <<< NEW
+
         # Use a fixed intermediate channel size, e.g., 64 or 128
-        inter_channels = 64
+        inter_channels = 128
         convs = []
-        # Reshape input [B, Q, H, W] -> [B*Q, 1, H, W]
+        
         # Layer 1
-        convs.append(nn.Conv2d(in_channels, inter_channels, kernel_size=3, padding=1, bias=False))
+        # <<< CHANGED: Input channels are now attn_in_channels (num_heads) instead of 1
+        convs.append(nn.Conv2d(self.attn_in_channels, inter_channels, kernel_size=3, padding=1, bias=False))
         convs.append(nn.BatchNorm2d(inter_channels))
         convs.append(nn.ReLU())
+
         # Intermediate layers
         for _ in range(num_convs - 2):
             convs.append(nn.Conv2d(inter_channels, inter_channels, kernel_size=3, padding=1, bias=False))
             convs.append(nn.BatchNorm2d(inter_channels))
             convs.append(nn.ReLU())
+
         # Define the final convolutional layer separately
         self.final_conv = nn.Conv2d(inter_channels, 1, kernel_size=1)
-        # Add the final convolutional layer to the list of convs
         convs.append(self.final_conv)
         self.conv_layers = nn.Sequential(*convs)
-        # Initialize weights
         self._reset_parameters()
     
     def _reset_parameters(self):
+        # (Parameter initialization is fine as is)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -112,32 +115,30 @@ class SimpleMaskHead(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-        # Calculate the bias for the final convolutional layer
-        # Desired initial probability for foreground
         pi = 0.01
-        # Calculate the bias
         b = -math.log((1 - pi) / pi)
-        # Set the bias for the final_conv
         nn.init.constant_(self.final_conv.bias, b)
     
     def forward(self, attention_map: torch.Tensor, target_img_size: Tuple[int, int]) -> torch.Tensor:
         """
         Args:
             attention_map (torch.Tensor): Output from MHAttentionMap.
-                                          Shape: [B, Q, H_attn, W_attn]
-            target_img_size (Tuple[int, int]): The original input image size (H, W). Used to determine
-                                              the final output mask size based on mask_out_stride.
+                                          Shape: [B, Q, num_heads, H_attn, W_attn] # <<< CHANGED
         Returns:
             torch.Tensor: Predicted masks. Shape: [B, Q, H_out, W_out]
-                          where H_out = target_img_size[0] / mask_out_stride
-                          and W_out = target_img_size[1] / mask_out_stride
         """
-        B, Q, H_attn, W_attn = attention_map.shape
+        B, Q, C_attn, H_attn, W_attn = attention_map.shape # <<< CHANGED
         assert Q == self.num_queries
-        # Reshape for convolution: [B, Q, H, W] -> [B*Q, 1, H, W]
-        x = attention_map.view(B * Q, 1, H_attn, W_attn)
+        assert C_attn == self.attn_in_channels
+        
+        # <<< CHANGED: Reshape for convolution, preserving the head channels
+        # Old: x = attention_map.view(B * Q, 1, H_attn, W_attn)
+        # New:
+        x = attention_map.reshape(B * Q, C_attn, H_attn, W_attn)
+        
         # Apply convolutional layers
         x = self.conv_layers(x)  # Shape: [B*Q, 1, H_out, W_out]
+        
         # Reshape back to [B, Q, H_out, W_out]
         masks = x.view(B, Q, *x.shape[-2:])
         return masks

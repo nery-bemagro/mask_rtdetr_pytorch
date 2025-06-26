@@ -172,13 +172,6 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout4 = nn.Dropout(dropout)
         self.norm3 = nn.LayerNorm(d_model)
 
-        # self._reset_parameters()
-
-    # def _reset_parameters(self):
-    #     linear_init_(self.linear1)
-    #     linear_init_(self.linear2)
-    #     xavier_uniform_(self.linear1.weight)
-    #     xavier_uniform_(self.linear2.weight)
 
     def with_pos_embed(self, tensor, pos):
         return tensor if pos is None else tensor + pos
@@ -308,7 +301,7 @@ class RTDETRTransformer(nn.Module):
                  eps=1e-2, 
                  aux_loss=True,
                  mask_head_num_convs=4,
-                 mask_out_stride=4):
+                 mask_out_stride=1):
 
         super(RTDETRTransformer, self).__init__()
         assert position_embed_type in ['sine', 'learned'], \
@@ -375,15 +368,16 @@ class RTDETRTransformer(nn.Module):
             self.anchors, self.valid_mask = self._generate_anchors()
             
         self.bbox_attention = MHAttentionMap(query_dim=hidden_dim,
-                                             hidden_dim=hidden_dim, # Key dim matches query dim here
-                                             num_heads=nhead,
+                                             hidden_dim=hidden_dim,
+                                             num_heads=nhead, # Ensure nhead is passed
                                              dropout=0.0)
 
-        # Replace the old mask head with the simple one
+        # <<< CHANGED: Pass `nhead` to the mask head as `attn_in_channels`
         self.mask_head = SimpleMaskHead(hidden_dim=hidden_dim,
                                         num_queries=num_queries,
                                         num_convs=mask_head_num_convs,
-                                        mask_out_stride=self.mask_out_stride)    
+                                        mask_out_stride=self.mask_out_stride,
+                                        attn_in_channels=nhead)
         
 
         self._reset_parameters()
